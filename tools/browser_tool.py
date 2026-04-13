@@ -465,7 +465,7 @@ def _cleanup_inactive_browser_sessions():
         try:
             elapsed = int(current_time - _session_last_activity.get(task_id, current_time))
             logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
-            cleanup_browser(task_id)
+            cleanup_browser(task_id, force=True)
             with _cleanup_lock:
                 if task_id in _session_last_activity:
                     del _session_last_activity[task_id]
@@ -778,7 +778,7 @@ BROWSER_TOOL_SCHEMAS = [
 
 def _create_local_session(task_id: str) -> Dict[str, str]:
     import uuid
-    session_name = f"h_{uuid.uuid4().hex[:10]}"
+    session_name = os.environ.get("HERMES_BROWSER_SESSION", f"h_{uuid.uuid4().hex[:10]}")
     logger.info("Created local browser session %s for task %s",
                 session_name, task_id)
     return {
@@ -1377,12 +1377,14 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         if is_first_nav and "features" in session_info:
             features = session_info["features"]
             active_features = [k for k, v in features.items() if v]
-            if not features.get("proxies"):
+            # Only warn about proxies for cloud (Browserbase) sessions, not local
+            if not features.get("proxies") and not features.get("local"):
                 response["stealth_warning"] = (
                     "Running WITHOUT residential proxies. Bot detection may be more aggressive. "
                     "Consider upgrading Browserbase plan for proxy support."
                 )
-            response["stealth_features"] = active_features
+            if not features.get("local"):
+                response["stealth_features"] = active_features
 
         # Auto-take a compact snapshot so the model can act immediately
         # without a separate browser_snapshot call.
@@ -2109,7 +2111,7 @@ def _cleanup_old_recordings(max_age_hours=72):
 # Cleanup and Management Functions
 # ============================================================================
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None, force: bool = False) -> None:
     """
     Clean up browser session for a task.
     
@@ -2121,6 +2123,13 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     """
     if task_id is None:
         task_id = "default"
+    
+    persistent_session = os.environ.get("HERMES_BROWSER_SESSION")
+    if persistent_session and not force:
+        logger.debug("cleanup_browser: persistent session, skipping close for task=%s", task_id)
+        with _cleanup_lock:
+            _active_sessions.pop(task_id, None)
+        return
     
     # Also clean up Camofox session if running in Camofox mode.
     # Skip full close when managed persistence is enabled — the browser
@@ -2191,7 +2200,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
         logger.debug("No active session found for task_id: %s", task_id)
 
 
-def cleanup_all_browsers() -> None:
+def cleanup_all_browsers(force: bool = False) -> None:
     """
     Clean up all active browser sessions.
     
@@ -2200,7 +2209,7 @@ def cleanup_all_browsers() -> None:
     with _cleanup_lock:
         task_ids = list(_active_sessions.keys())
     for task_id in task_ids:
-        cleanup_browser(task_id)
+        cleanup_browser(task_id, force=force)
 
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved

@@ -2121,11 +2121,14 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
-        try:
-            cleanup_browser(task_id)
-        except Exception as e:
-            if self.verbose_logging:
-                logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+        # Skip browser cleanup for persistent sessions — let the background
+        # inactivity thread handle it so the browser survives between turns.
+        if not os.environ.get("HERMES_BROWSER_SESSION"):
+            try:
+                cleanup_browser(task_id)
+            except Exception as e:
+                if self.verbose_logging:
+                    logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
     # ------------------------------------------------------------------
     # Background memory/skill review
