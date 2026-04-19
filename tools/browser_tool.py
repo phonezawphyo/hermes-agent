@@ -1006,16 +1006,26 @@ def _managed_persistence_enabled() -> bool:
         return False
 
 
+# Valid session name pattern — prevents path traversal and injection
+_SESSION_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+
 def _create_local_session(task_id: str) -> Dict[str, str]:
-    import os
     import uuid
     # Ephemeral by default — each process gets a random session name.
     # When browser.local.managed_persistence is enabled in config.yaml,
     # use a stable session name so cookies survive Hermes restarts
-    # (mirrors Camofox's managed_persistence pattern).
+    # (mirrors Camofox's managed_persistence pattern which has no env var).
     managed = _managed_persistence_enabled()
     if managed:
-        session_name = os.environ.get("HERMES_BROWSER_SESSION", "hermes")
+        session_name = load_config().get("browser", {}).get("local", {}).get(
+            "session_name", "hermes"
+        )
+        if not _SESSION_NAME_RE.match(session_name):
+            raise ValueError(
+                f"Invalid browser.local.session_name: must match "
+                r"^[a-zA-Z0-9_-]{{1,64}}$ (got {session_name!r})"
+            )
     else:
         session_name = f"h_{uuid.uuid4().hex[:10]}"
     logger.info("Created local browser session %s for task %s (managed=%s)",
