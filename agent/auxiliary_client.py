@@ -1137,13 +1137,15 @@ def _validate_base_url(base_url: str) -> None:
         ) from exc
 
 
-def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
+def _try_custom_endpoint(api_mode: str = None) -> Tuple[Optional[Any], Optional[str]]:
     runtime = _resolve_custom_runtime()
     if len(runtime) == 2:
         custom_base, custom_key = runtime
-        custom_mode = None
+        custom_mode = api_mode
     else:
         custom_base, custom_key, custom_mode = runtime
+        if api_mode:
+            custom_mode = api_mode
     if not custom_base or not custom_key:
         return None, None
     if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
@@ -1826,6 +1828,30 @@ def resolve_provider_client(
             from hermes_cli.models import copilot_default_headers
 
             headers.update(copilot_default_headers())
+        # ── Anthropic Messages protocol (e.g. kimi-coding, minimax) ──────
+        # When api_mode is explicitly "anthropic_messages", wrap the client
+        # so that .chat.completions.create() speaks Anthropic Messages
+        # protocol instead of OpenAI wire format.
+        if api_mode == "anthropic_messages":
+            try:
+                from agent.anthropic_adapter import build_anthropic_client
+                real_client = build_anthropic_client(api_key, base_url)
+            except ImportError:
+                logger.warning(
+                    "api_mode=anthropic_messages requested but anthropic SDK "
+                    "is not installed — falling back to OpenAI-wire"
+                )
+                real_client = None
+            if real_client is not None:
+                client = AnthropicAuxiliaryClient(
+                    real_client, final_model, api_key, base_url, is_oauth=False
+                )
+                logger.debug(
+                    "resolve_provider_client: %s (%s) via anthropic_messages",
+                    provider, final_model)
+                return (_to_async_client(client, final_model) if async_mode
+                        else (client, final_model))
+
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
@@ -1961,7 +1987,7 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
 
-def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
+def _resolve_strict_vision_backend(provider: str, api_mode: str = None) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
     if provider == "openrouter":
         return _try_openrouter()
@@ -1972,7 +1998,7 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
     if provider == "anthropic":
         return _try_anthropic()
     if provider == "custom":
-        return _try_custom_endpoint()
+        return _try_custom_endpoint(api_mode=api_mode)
     return None, None
 
 
@@ -2011,6 +2037,7 @@ def resolve_vision_provider_client(
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    api_mode: Optional[str] = None,
     async_mode: bool = False,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
@@ -2041,7 +2068,7 @@ def resolve_vision_provider_client(
             async_mode=async_mode,
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
-            api_mode=resolved_api_mode,
+            api_mode=api_mode or resolved_api_mode,
         )
         if client is None:
             return "custom", None, None
@@ -2074,7 +2101,7 @@ def resolve_vision_provider_client(
                 vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode)
+                    api_mode=api_mode or resolved_api_mode)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using main provider %s (%s)",
@@ -2096,11 +2123,11 @@ def resolve_vision_provider_client(
         return None, None, None
 
     if requested in _VISION_AUTO_PROVIDER_ORDER:
-        sync_client, default_model = _resolve_strict_vision_backend(requested)
+        sync_client, default_model = _resolve_strict_vision_backend(requested, api_mode=api_mode or resolved_api_mode)
         return _finalize(requested, sync_client, default_model)
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
-                                             api_mode=resolved_api_mode)
+                                             api_mode=api_mode or resolved_api_mode)
     if client is None:
         return requested, None, None
     return requested, client, final_model
@@ -2740,6 +2767,7 @@ def call_llm(
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
+            api_mode=resolved_api_mode,
             async_mode=False,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
@@ -2977,6 +3005,7 @@ async def async_call_llm(
             model=resolved_model or model,
             base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key,
+            api_mode=resolved_api_mode,
             async_mode=True,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
